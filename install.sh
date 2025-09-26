@@ -1,143 +1,65 @@
 #!/bin/bash
-set -euo pipefail
+set -e
 
-# -------- базовые пути --------
-HOME_DIR="$HOME"
-PROJECT="$HOME_DIR/tg_sender"
-VENV="$HOME_DIR/tg_env_tgsender"
+echo "🚀 Установка авторассылки Telegram..."
 
-say() { printf "\n\033[1m%s\033[0m\n" "$*"; }
-
-say "1) Создаю структуру проекта: $PROJECT"
-mkdir -p "$PROJECT"/{groups,logs}
-
-say "2) Проверяю Python и создаю виртуальное окружение"
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "Не найден python3. Установите Xcode Command Line Tools: xcode-select --install"
-  exit 1
+# 1. Устанавливаем зависимости
+echo "📦 Установка Homebrew (если нет)..."
+if ! command -v brew &>/dev/null; then
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 fi
-python3 -m venv "$VENV"
 
-say "3) Устанавливаю зависимости (telethon, apscheduler, python-dotenv)"
-source "$VENV/bin/activate"
-pip install --upgrade pip setuptools wheel >/dev/null
-pip install telethon apscheduler python-dotenv >/dev/null
+echo "📦 Установка Python и pyenv..."
+brew install pyenv git
 
-cd "$PROJECT"
+pyenv install -s 3.10.13
+pyenv global 3.10.13
 
-say "4) Пишу основной скрипт sender_full.py (поддержка /тем в форумах)"
-cat > sender_full.py <<'PY'
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-import os, asyncio, random
-from datetime import datetime
-from typing import Tuple, Optional
-from telethon import TelegramClient
-from telethon.errors import FloodWaitError, RPCError
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from dotenv import load_dotenv
+# 2. Создаём проект
+echo "📂 Создаю папку ~/tg_sender"
+mkdir -p ~/tg_sender/groups ~/tg_sender/logs
+cd ~/tg_sender
 
-load_dotenv()
+echo "🐍 Создаю виртуальное окружение..."
+python3 -m venv ~/tg_env_tgsender
+source ~/tg_env_tgsender/bin/activate
 
-def need(var):
-    v = os.getenv(var)
-    if not v:
-        print(f"ERROR: заполни переменную {var} в .env")
-        raise SystemExit(1)
-    return v
+pip install --upgrade pip
+pip install telethon apscheduler python-dotenv
 
-API_ID    = int(need("API_ID"))
-API_HASH  = need("API_HASH")
-PHONE     = os.getenv("PHONE")  # можно пустым: Telethon спросит при первом запуске
-SESSION   = os.getenv("SESSION_NAME", "tg_broadcaster_session")
+# 3. Запрашиваем данные
+echo "Введите API_ID (получите на https://my.telegram.org):"
+read API_ID
+echo "Введите API_HASH:"
+read API_HASH
+echo "Введите номер телефона (с +):"
+read PHONE
 
-DELAY  = float(os.getenv("DELAY_BETWEEN_MESSAGES","60"))
-JITTER = float(os.getenv("JITTER_PCT","0.15"))
+cat <<EOF > .env
+API_ID=$API_ID
+API_HASH=$API_HASH
+PHONE=$PHONE
+EOF
 
-FILE_HOURLY = "groups/groups_hourly.txt"
-FILE_DAILY  = "groups/groups_daily.txt"
-FILE_3DAYS  = "groups/groups_3days.txt"
-MSG_FILE    = "message.txt"
+echo "✅ Данные сохранены в .env"
 
-def load_message():
-    if os.path.exists(MSG_FILE):
-        return open(MSG_FILE,"r",encoding="utf-8").read().strip()
-    return "⚠️ message.txt отсутствует или пуст."
+# 4. Файл сообщения
+cat <<'EOF' > message.txt
+🎯 Авторассылка для MacBook — «Запустил и забыл!»
 
-def load_groups(path):
-    if not os.path.exists(path): return []
-    with open(path,"r",encoding="utf-8") as f:
-        return [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+🔥 Готовое решение для рассылки в Telegram без лишних заморочек.
 
-def parse_target(s: str) -> Tuple[str, Optional[int]]:
-    # https://t.me/group/123 -> (https://t.me/group, 123)
-    if s.startswith("http") and s.count("/")>=3:
-        p = s.rstrip("/").split("/")
-        if p[-1].isdigit():
-            return "/".join(p[:-1]), int(p[-1])
-    return s, None
+✅ Отправка каждый час / раз в сутки / раз в 3 суток.
+✅ Группы предзаполнены, ничего настраивать не нужно.
+✅ Работает в фоне на вашем Mac.
 
-async def jitter_sleep():
-    await asyncio.sleep(max(0.0, DELAY * (1.0 + random.uniform(-JITTER, JITTER))))
+Запустил → забыл → сообщения сами уходят ⤵️
 
-async def send_list(client, path, label):
-    msg = load_message()
-    targets = load_groups(path)
-    if not targets:
-        print(f"[{label}] список пуст — пропускаем ({path})"); return
-    print(f"=== [{label}] старт {datetime.now().isoformat()} / {len(targets)} групп ===")
-    for i, raw in enumerate(targets, 1):
-        target, topic = parse_target(raw)
-        try:
-            entity = await client.get_entity(target)
-            if topic is not None:
-                await client.send_message(entity, msg, reply_to=topic)  # пост в тему
-                print(f"[{label}] {i}/{len(targets)} {raw} -> тема {topic}")
-            else:
-                await client.send_message(entity, msg)
-                print(f"[{label}] {i}/{len(targets)} {raw} -> чат")
-        except FloodWaitError as e:
-            print(f"[{label}] {raw} -> FloodWait {e.seconds}s (пропускаем)")
-        except RPCError as e:
-            print(f"[{label}] {raw} -> RPCError: {e}")
-        except Exception as e:
-            print(f"[{label}] {raw} -> Ошибка: {e}")
-        await jitter_sleep()
-    print(f"=== [{label}] финиш {datetime.now().isoformat()} ===")
+📩 @ocherry_manager
+EOF
 
-async def main():
-    client = TelegramClient(SESSION, API_ID, API_HASH)
-    await client.start(phone=PHONE)
-    me = await client.get_me()
-    print(f"✅ Авторизация: {getattr(me,'first_name','')} (@{getattr(me,'username','')})")
-
-    sched = AsyncIOScheduler()
-    # Запускаем сразу и далее по расписанию
-    sched.add_job(send_list, 'interval', hours=1,  args=[client, FILE_HOURLY, "hourly"], next_run_time=datetime.now())
-    sched.add_job(send_list, 'interval', hours=24, args=[client, FILE_DAILY,  "daily"],  next_run_time=datetime.now())
-    sched.add_job(send_list, 'interval', hours=72, args=[client, FILE_3DAYS,  "3days"],  next_run_time=datetime.now())
-    sched.start()
-    print("⏳ Планировщик запущен: hourly=1ч, daily=24ч, 3days=72ч.\nМеняй message.txt и groups/* — перезапуск не нужен.")
-
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-PY
-
-say "5) Предзаполняю .env (пустые поля сейчас запросим)"
-cat > .env <<'ENV'
-SESSION_NAME=tg_broadcaster_session
-API_ID=
-API_HASH=
-PHONE=
-DELAY_BETWEEN_MESSAGES=60
-JITTER_PCT=0.15
-ENV
-
-say "6) Предзаполняю списки групп (hourly / daily / 3days)"
-# hourly
-cat > groups/groups_hourly.txt <<'EOF'
+# 5. Списки групп
+cat <<'EOF' > groups/hourly.txt
 https://t.me/Sugar_Desk
 https://t.me/devil_desk
 https://t.me/TopDatingForum
@@ -169,8 +91,6 @@ https://t.me/easyonlyeo
 https://t.me/doska_365
 https://t.me/adult_board_ofm
 https://t.me/BuddaHubBoard
-https://t.me/TopDatingForum
-https://t.me/dating_board
 https://t.me/mixxidesk
 https://t.me/adultbestdesk
 https://t.me/desk_shark
@@ -180,7 +100,6 @@ https://t.me/Adults_play_Board
 https://t.me/desk_lion
 https://t.me/ADOboard
 https://t.me/Minnieadult
-https://t.me/board_adult1
 https://t.me/promoperfrection
 https://t.me/only_fasly
 https://t.me/webcamadultdesk
@@ -190,7 +109,6 @@ https://t.me/IndustryAdult
 https://t.me/Onlyfans_Hunters
 https://t.me/bigdoskaoficial
 https://t.me/bigdoskaof
-https://t.me/LookHereDoskaOF
 https://t.me/onlyfans_live_board
 https://t.me/of_desk
 https://t.me/board_onlyfans
@@ -236,7 +154,6 @@ https://t.me/SoloMoon_community
 https://t.me/onlyadating
 https://t.me/CrocoDesk
 https://t.me/collectordesk
-https://t.me/acaagawgfwa
 https://t.me/ADULT_DOSKA
 https://t.me/only_adult_desk
 https://t.me/Meduza_OF_Desk
@@ -247,14 +164,12 @@ https://t.me/jobadult
 https://t.me/nikodesk
 https://t.me/onlydesc
 https://t.me/wixxidesk
-https://t.me/onlyfanspromoroom
 https://t.me/adult_markets
 https://t.me/OnlyDesk
 https://t.me/BIGDesk
-https://t.me/Dating_Forums
 https://t.me/SugarDesk
 https://t.me/disneydesk
-https://t.me/Workers_Desk 
+https://t.me/Workers_Desk
 https://t.me/camweboard
 https://t.me/goatsof
 https://t.me/OTC_ADULT
@@ -262,8 +177,7 @@ https://t.me/apreeteam_desk
 https://t.me/adulthubdoska
 EOF
 
-# daily
-cat > groups/groups_daily.txt <<'EOF'
+cat <<'EOF' > groups/daily.txt
 https://t.me/adult_18_board
 https://t.me/onlyfanspromoroom
 https://t.me/Adult_platform
@@ -271,98 +185,93 @@ https://t.me/OnlyBulletin
 https://t.me/adult_desk
 EOF
 
-# 3days
-cat > groups/groups_3days.txt <<'EOF'
+cat <<'EOF' > groups/3days.txt
 https://t.me/CardoCrewDesk
 https://t.me/CardoCrewDeskTraffic
 https://t.me/adszavety
 EOF
 
-say "7) Запрашиваю API_ID / API_HASH / PHONE и пишу .env"
-read -p "API_ID (my.telegram.org): " API_ID
-read -p "API_HASH: " API_HASH
-read -p "PHONE (с +): " PHONE
-cat > .env <<ENV
-SESSION_NAME=tg_broadcaster_session
-API_ID=${API_ID}
-API_HASH=${API_HASH}
-PHONE=${PHONE}
-DELAY_BETWEEN_MESSAGES=60
-JITTER_PCT=0.15
-ENV
-
-say "8) Вставьте текст сообщения. Окончание ввода: Ctrl+D"
-cat > message.txt
-
-say "9) Создаю сервисные скрипты start/stop/status"
-cat > start.sh <<'ST'
+# 6. Сервисные скрипты
+cat <<'EOF' > start.sh
 #!/bin/bash
-set -e
-source "$HOME/tg_env_tgsender/bin/activate"
-cd "$HOME/tg_sender"
-nohup python sender_full.py >> logs/run.log 2>&1 &
-echo $! > logs/sender.pid
-echo "Started PID=$(cat logs/sender.pid). Логи: $HOME/tg_sender/logs/run.log"
-ST
-chmod +x start.sh
+cd ~/tg_sender
+source ~/tg_env_tgsender/bin/activate
+python3 sender_full.py
+EOF
 
-cat > stop.sh <<'SP'
+cat <<'EOF' > stop.sh
 #!/bin/bash
-set -e
-PIDFILE="$HOME/tg_sender/logs/sender.pid"
-if [ -f "$PIDFILE" ]; then
-  PID=$(cat "$PIDFILE"); kill "$PID" 2>/dev/null || true; rm -f "$PIDFILE"
-  echo "Stopped PID $PID"
-else
-  pkill -f "python sender_full.py" || true
-  echo "Stopped by pkill"
-fi
-SP
-chmod +x stop.sh
+pkill -f sender_full.py || true
+echo "⛔️ Остановлено"
+EOF
 
-cat > status.sh <<'SS'
+cat <<'EOF' > status.sh
 #!/bin/bash
-echo "PID:"; cat "$HOME/tg_sender/logs/sender.pid" 2>/dev/null || echo "no pid"
-echo "---- last 50 lines of log ----"
-tail -n 50 "$HOME/tg_sender/logs/run.log" 2>/dev/null || echo "no logs yet"
-SS
-chmod +x status.sh
+ps aux | grep sender_full.py | grep -v grep
+tail -n 20 ~/tg_sender/logs/run.log
+EOF
 
-say "10) Запустить рассылку сейчас? (y/n)"
-read -r GO
-if [[ "$GO" == "y" || "$GO" == "Y" ]]; then
-  ./start.sh
-fi
+chmod +x start.sh stop.sh status.sh
 
-say "11) Автостарт при входе в macOS (launchd)? (y/n)"
-read -r AUT
-if [[ "$AUT" == "y" || "$AUT" == "Y" ]]; then
-  PLIST="$HOME/Library/LaunchAgents/com.tgsender.autostart.plist"
-  mkdir -p "$HOME/Library/LaunchAgents"
-  cat > "$PLIST" <<PL
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key><string>com.tgsender.autostart</string>
-  <key>ProgramArguments</key><array>
-    <string>/bin/bash</string>
-    <string>-c</string>
-    <string>source $HOME/tg_env_tgsender/bin/activate && cd $HOME/tg_sender && python sender_full.py</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>StandardOutPath</key><string>$HOME/tg_sender/logs/launchd_out.log</string>
-  <key>StandardErrorPath</key><string>$HOME/tg_sender/logs/launchd_err.log</string>
-</dict></plist>
-PL
-  launchctl unload "$PLIST" 2>/dev/null || true
-  launchctl load "$PLIST"
-  launchctl start com.tgsender.autostart
-  say "Автостарт включён. Перезагрузка — и сервис поднимется сам."
-fi
+# 7. Основной скрипт
+cat <<'EOF' > sender_full.py
+import os, asyncio, random, datetime
+from telethon import TelegramClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
 
-say "Готово. Команды:
-  cd ~/tg_sender
-  ./start.sh    # запуск в фоне
-  ./status.sh   # статус+логи
-  ./stop.sh     # остановка
-"
+load_dotenv()
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+PHONE = os.getenv("PHONE")
+
+async def send_message(client, group, text):
+    try:
+        await client.send_message(group, text)
+        print(f"[{datetime.datetime.now()}] ✅ Sent -> {group}")
+    except Exception as e:
+        print(f"[{datetime.datetime.now()}] ❌ Error {group}: {e}")
+
+async def job(client, filename, text):
+    if not os.path.exists(filename): return
+    with open(filename) as f:
+        groups = [g.strip() for g in f if g.strip()]
+    for g in groups:
+        await send_message(client, g, text)
+        await asyncio.sleep(random.randint(10, 30))
+
+async def main():
+    client = TelegramClient("tg_session", API_ID, API_HASH)
+    await client.connect()
+
+    if not await client.is_user_authorized():
+        print("➡️ Введите код из Telegram (он придёт в приложение/SMS):")
+        await client.send_code_request(PHONE)
+        code = input("Код: ")
+        try:
+            await client.sign_in(PHONE, code)
+        except Exception:
+            password = input("Пароль 2FA (если включён, иначе Enter): ")
+            await client.sign_in(password=password)
+
+    print("✅ Авторизация выполнена.")
+
+    with open("message.txt") as f:
+        text = f.read().strip()
+
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(job, "interval", hours=1, args=[client, "groups/hourly.txt", text])
+    scheduler.add_job(job, "interval", hours=24, args=[client, "groups/daily.txt", text])
+    scheduler.add_job(job, "interval", hours=72, args=[client, "groups/3days.txt", text])
+    scheduler.start()
+
+    print("⏳ Рассылка запущена. Работает круглосуточно...")
+    await asyncio.Event().wait()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOF
+
+echo "🎉 Установка завершена!"
+echo "➡️ Теперь запустите ./start.sh — введите код из Telegram один раз."
+echo "После этого рассылка будет работать сама."
