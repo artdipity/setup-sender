@@ -116,8 +116,6 @@ https://t.me/easyonlyeo
 https://t.me/doska_365
 https://t.me/adult_board_ofm
 https://t.me/BuddaHubBoard
-https://t.me/TopDatingForum
-https://t.me/dating_board
 https://t.me/mixxidesk
 https://t.me/adultbestdesk
 https://t.me/desk_shark
@@ -127,7 +125,6 @@ https://t.me/Adults_play_Board
 https://t.me/desk_lion
 https://t.me/ADOboard
 https://t.me/Minnieadult
-https://t.me/board_adult1
 https://t.me/promoperfrection
 https://t.me/only_fasly
 https://t.me/webcamadultdesk
@@ -137,7 +134,6 @@ https://t.me/IndustryAdult
 https://t.me/Onlyfans_Hunters
 https://t.me/bigdoskaoficial
 https://t.me/bigdoskaof
-https://t.me/LookHereDoskaOF
 https://t.me/onlyfans_live_board
 https://t.me/of_desk
 https://t.me/board_onlyfans
@@ -194,16 +190,13 @@ https://t.me/jobadult
 https://t.me/nikodesk
 https://t.me/onlydesc
 https://t.me/wixxidesk
-https://t.me/onlyfanspromoroom
 https://t.me/adult_markets
 https://t.me/OnlyDesk
 https://t.me/BIGDesk
-https://t.me/Dating_Forums
-https://t.me/SugarDesk
 https://t.me/disneydesk
 https://t.me/Workers_Desk 
 https://t.me/camweboard
-https://t.me/goatsof		
+https://t.me/goatsof
 https://t.me/OTC_ADULT
 https://t.me/apreeteam_desk
 https://t.me/adulthubdoska
