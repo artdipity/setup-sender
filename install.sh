@@ -3,30 +3,28 @@ set -e
 
 echo "🚀 Установка авторассылки Telegram..."
 
-# === 1. Устанавливаем Homebrew (если нет) ===
+# === 1. Homebrew (если нет) ===
 if ! command -v brew &> /dev/null; then
   echo "🍺 Устанавливаем Homebrew..."
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 fi
 
-# === 2. Устанавливаем pyenv и pyenv-virtualenv ===
+# === 2. pyenv и pyenv-virtualenv ===
 echo "🐍 Устанавливаем pyenv и pyenv-virtualenv..."
-brew install pyenv pyenv-virtualenv
+brew install pyenv pyenv-virtualenv git
 
-# Добавляем инициализацию в .zshrc (если еще нет)
 if ! grep -q 'pyenv init' ~/.zshrc; then
   echo 'eval "$(pyenv init -)"' >> ~/.zshrc
   echo 'eval "$(pyenv virtualenv-init -)"' >> ~/.zshrc
 fi
 
-# === 3. Устанавливаем Python через pyenv ===
+# === 3. Python ===
 PYTHON_VERSION=3.10.13
 if ! pyenv versions | grep -q $PYTHON_VERSION; then
   echo "⬇️ Ставим Python $PYTHON_VERSION..."
   pyenv install $PYTHON_VERSION
 fi
 
-# Создаем виртуальное окружение
 if ! pyenv virtualenvs | grep -q tg_env_tgsender; then
   pyenv virtualenv $PYTHON_VERSION tg_env_tgsender
 fi
@@ -34,7 +32,7 @@ fi
 # === 4. Клонируем проект ===
 TARGET_DIR=~/tg_sender
 if [ -d "$TARGET_DIR" ]; then
-  echo "📂 Папка $TARGET_DIR уже существует, пропускаем..."
+  echo "📂 Папка $TARGET_DIR уже есть"
 else
   echo "📂 Клонируем проект..."
   git clone https://github.com/artdipity/setup-sender.git $TARGET_DIR
@@ -42,23 +40,48 @@ fi
 
 cd $TARGET_DIR
 
-# === 5. Активируем окружение и ставим зависимости ===
-echo "📦 Устанавливаем зависимости..."
+# === 5. Активируем окружение ===
 eval "$(pyenv init -)"
 eval "$(pyenv virtualenv-init -)"
 pyenv activate tg_env_tgsender
 
+# === 6. requirements.txt ===
+cat <<EOF > requirements.txt
+telethon==1.41.2
+apscheduler==3.11.0
+python-dotenv==1.1.1
+rsa==4.9.1
+pyaes==1.6.1
+pyasn1==0.6.1
+tzlocal==5.3.1
+EOF
+
+echo "📦 Устанавливаем зависимости..."
 pip install --upgrade pip
 pip install -r requirements.txt
 
-# === 6. Создаём .env ===
+# === 7. Ввод данных пользователя ===
+echo "➡️ Введите данные для подключения:"
+read -p "API_ID (с my.telegram.org): " API_ID
+read -p "API_HASH: " API_HASH
+read -p "PHONE (+380...): " PHONE
+
+echo "➡️ Введите текст рассылки (окончание Ctrl+D):"
+MESSAGE=$(</dev/stdin)
+
+# === 8. Создаём .env ===
 cat <<EOF > .env
-API_ID=
-API_HASH=
-PHONE=
+API_ID=$API_ID
+API_HASH=$API_HASH
+PHONE=$PHONE
 EOF
 
-# === 7. Создаём файлы групп ===
+# === 9. Сохраняем текст сообщения ===
+cat <<EOF > message.txt
+$MESSAGE
+EOF
+
+# === 10. Группы ===
 mkdir -p groups
 
 cat <<'EOF' > groups/hourly.txt
@@ -200,7 +223,7 @@ https://t.me/CardoCrewDeskTraffic
 https://t.me/adszavety
 EOF
 
-# === 8. Создаём стартовые скрипты ===
+# === 11. start/stop/status ===
 cat <<'EOF' > start.sh
 #!/bin/bash
 cd ~/tg_sender
@@ -224,5 +247,5 @@ EOF
 chmod +x status.sh
 
 echo "✅ Установка завершена!"
-echo "➡️ Теперь перейдите в папку ~/tg_sender и введите:"
-echo "./start.sh"
+echo "Теперь запустите:"
+echo "cd ~/tg_sender && ./start.sh"
