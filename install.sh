@@ -29,23 +29,12 @@ if ! pyenv virtualenvs | grep -q tg_env_tgsender; then
   pyenv virtualenv $PYTHON_VERSION tg_env_tgsender
 fi
 
-# === 4. Клонируем проект ===
+# === 4. Создаём папку проекта ===
 TARGET_DIR=~/tg_sender
-if [ -d "$TARGET_DIR" ]; then
-  echo "📂 Папка $TARGET_DIR уже есть"
-else
-  echo "📂 Клонируем проект..."
-  git clone https://github.com/artdipity/setup-sender.git $TARGET_DIR
-fi
-
+mkdir -p $TARGET_DIR
 cd $TARGET_DIR
 
-# === 5. Активируем окружение ===
-eval "$(pyenv init -)"
-eval "$(pyenv virtualenv-init -)"
-pyenv activate tg_env_tgsender
-
-# === 6. requirements.txt ===
+# === 5. requirements.txt ===
 cat <<EOF > requirements.txt
 telethon==1.41.2
 apscheduler==3.11.0
@@ -55,6 +44,11 @@ pyaes==1.6.1
 pyasn1==0.6.1
 tzlocal==5.3.1
 EOF
+
+# === 6. Активируем окружение ===
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+pyenv activate tg_env_tgsender
 
 echo "📦 Устанавливаем зависимости..."
 pip install --upgrade pip
@@ -69,19 +63,122 @@ read -p "PHONE (+380...): " PHONE
 echo "➡️ Введите текст рассылки (окончание Ctrl+D):"
 MESSAGE=$(</dev/stdin)
 
-# === 8. Создаём .env ===
+# === 8. Сохраняем данные в .env ===
 cat <<EOF > .env
 API_ID=$API_ID
 API_HASH=$API_HASH
 PHONE=$PHONE
 EOF
 
-# === 9. Сохраняем текст сообщения ===
+# === 9. Сохраняем сообщение ===
 cat <<EOF > message.txt
 $MESSAGE
 EOF
 
-# === 10. Группы ===
+# === 10. sender_full.py ===
+cat <<'EOF' > sender_full.py
+import os
+import asyncio
+from telethon import TelegramClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
+
+# Загружаем переменные
+load_dotenv()
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+PHONE = os.getenv("PHONE")
+
+# Пути к файлам
+MESSAGE_FILE = "message.txt"
+GROUPS_DIR = "groups"
+
+GROUP_FILES = {
+    "hourly": os.path.join(GROUPS_DIR, "hourly.txt"),
+    "daily": os.path.join(GROUPS_DIR, "daily.txt"),
+    "3days": os.path.join(GROUPS_DIR, "3days.txt"),
+}
+
+# Загружаем сообщение
+def load_message():
+    if os.path.exists(MESSAGE_FILE):
+        with open(MESSAGE_FILE, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return "⚡️ Тестовое сообщение"
+
+# Загружаем список групп
+def load_groups(filename):
+    if not os.path.exists(filename):
+        return []
+    with open(filename, "r", encoding="utf-8") as f:
+        return [line.strip() for line in f if line.strip()]
+
+# Рассылка сообщений
+async def send_to_groups(client, groups, label, message):
+    if not groups:
+        print(f"[{label}] список пуст — пропускаем")
+        return
+
+    print(f"=== Рассылка {label} начата ===")
+    for group in groups:
+        try:
+            await client.send_message(group, message)
+            print(f"[{label}] -> {group} ✅ отправлено")
+            await asyncio.sleep(3)  # задержка между группами
+        except Exception as e:
+            print(f"[{label}] -> {group} ❌ ошибка: {e}")
+    print(f"=== Рассылка {label} завершена ===")
+
+# Основная логика
+async def main():
+    message = load_message()
+    client = TelegramClient("tg_session", API_ID, API_HASH)
+
+    await client.start(phone=PHONE)
+
+    # Автостарт рассылки сразу по всем спискам
+    print("🚀 Автостарт-рассылка по всем группам...")
+    for label, path in GROUP_FILES.items():
+        groups = load_groups(path)
+        await send_to_groups(client, groups, label, message)
+
+    # Планировщик
+    scheduler = AsyncIOScheduler()
+
+    # Каждый час
+    scheduler.add_job(
+        send_to_groups,
+        "interval",
+        args=[client, load_groups(GROUP_FILES["hourly"]), "hourly", message],
+        hours=1,
+    )
+
+    # Каждые сутки
+    scheduler.add_job(
+        send_to_groups,
+        "interval",
+        args=[client, load_groups(GROUP_FILES["daily"]), "daily", message],
+        hours=24,
+    )
+
+    # Каждые 3 суток
+    scheduler.add_job(
+        send_to_groups,
+        "interval",
+        args=[client, load_groups(GROUP_FILES["3days"]), "3days", message],
+        hours=72,
+    )
+
+    scheduler.start()
+    print("⏳ Расписание запущено. Работает круглосуточно...")
+    await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+EOF
+
+# === 11. Группы ===
 mkdir -p groups
 
 cat <<'EOF' > groups/hourly.txt
@@ -116,6 +213,8 @@ https://t.me/easyonlyeo
 https://t.me/doska_365
 https://t.me/adult_board_ofm
 https://t.me/BuddaHubBoard
+https://t.me/TopDatingForum
+https://t.me/dating_board
 https://t.me/mixxidesk
 https://t.me/adultbestdesk
 https://t.me/desk_shark
@@ -125,6 +224,7 @@ https://t.me/Adults_play_Board
 https://t.me/desk_lion
 https://t.me/ADOboard
 https://t.me/Minnieadult
+https://t.me/board_adult1
 https://t.me/promoperfrection
 https://t.me/only_fasly
 https://t.me/webcamadultdesk
@@ -134,6 +234,7 @@ https://t.me/IndustryAdult
 https://t.me/Onlyfans_Hunters
 https://t.me/bigdoskaoficial
 https://t.me/bigdoskaof
+https://t.me/LookHereDoskaOF
 https://t.me/onlyfans_live_board
 https://t.me/of_desk
 https://t.me/board_onlyfans
@@ -190,13 +291,16 @@ https://t.me/jobadult
 https://t.me/nikodesk
 https://t.me/onlydesc
 https://t.me/wixxidesk
+https://t.me/onlyfanspromoroom
 https://t.me/adult_markets
 https://t.me/OnlyDesk
 https://t.me/BIGDesk
+https://t.me/Dating_Forums
+https://t.me/SugarDesk
 https://t.me/disneydesk
 https://t.me/Workers_Desk 
 https://t.me/camweboard
-https://t.me/goatsof
+https://t.me/goatsof		
 https://t.me/OTC_ADULT
 https://t.me/apreeteam_desk
 https://t.me/adulthubdoska
@@ -216,14 +320,14 @@ https://t.me/CardoCrewDeskTraffic
 https://t.me/adszavety
 EOF
 
-# === 11. start/stop/status ===
+# === 12. start/stop/status ===
 cat <<'EOF' > start.sh
 #!/bin/bash
 cd ~/tg_sender
 eval "$(pyenv init -)"
 eval "$(pyenv virtualenv-init -)"
 pyenv activate tg_env_tgsender
-python sender_full.py --schedule
+python sender_full.py
 EOF
 chmod +x start.sh
 
