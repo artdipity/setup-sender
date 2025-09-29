@@ -249,7 +249,6 @@ mkdir -p groups
 cat <<'EOF' > groups/hourly.txt
 https://t.me/Sugar_Desk
 https://t.me/devil_desk
-https://t.me/TopDatingForum
 https://t.me/brachnie/4
 https://t.me/Dating_Forums
 https://t.me/adult_news1/1
@@ -289,7 +288,6 @@ https://t.me/Adults_play_Board
 https://t.me/desk_lion
 https://t.me/ADOboard
 https://t.me/Minnieadult
-https://t.me/board_adult1
 https://t.me/promoperfrection
 https://t.me/only_fasly
 https://t.me/webcamadultdesk
@@ -360,7 +358,6 @@ https://t.me/onlyfanspromoroom
 https://t.me/adult_markets
 https://t.me/OnlyDesk
 https://t.me/BIGDesk
-https://t.me/Dating_Forums
 https://t.me/SugarDesk
 https://t.me/disneydesk
 https://t.me/Workers_Desk 
