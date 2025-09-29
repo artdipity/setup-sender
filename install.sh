@@ -3,6 +3,11 @@ set -e
 
 echo "🚀 Установка авторассылки Telegram..."
 
+# === 0. Проверка оболочки на macOS ===
+if [[ "$OSTYPE" != "darwin"* ]]; then
+  echo "Этот инсталлятор рассчитан на macOS. Для Linux потребуется адаптация."
+fi
+
 # === 1. Homebrew (если нет) ===
 if ! command -v brew &> /dev/null; then
   echo "🍺 Устанавливаем Homebrew..."
@@ -11,28 +16,38 @@ fi
 
 # === 2. pyenv и pyenv-virtualenv ===
 echo "🐍 Устанавливаем pyenv и pyenv-virtualenv..."
-brew install pyenv pyenv-virtualenv git
+brew install pyenv pyenv-virtualenv git nano
 
+# Добавляем инициализацию в ~/.zshrc (если нет)
 if ! grep -q 'pyenv init' ~/.zshrc; then
-  echo 'eval "$(pyenv init -)"' >> ~/.zshrc
-  echo 'eval "$(pyenv virtualenv-init -)"' >> ~/.zshrc
+  {
+    echo ''
+    echo '# pyenv init'
+    echo 'eval "$(pyenv init -)"'
+    echo 'eval "$(pyenv virtualenv-init -)"'
+  } >> ~/.zshrc
 fi
 
-# === 3. Python ===
+# Загружаем окружение pyenv в текущую оболочку
+eval "$(pyenv init -)"
+eval "$(pyenv virtualenv-init -)"
+
+# === 3. Python через pyenv ===
 PYTHON_VERSION=3.10.13
-if ! pyenv versions | grep -q $PYTHON_VERSION; then
-  echo "⬇️ Ставим Python $PYTHON_VERSION..."
-  pyenv install $PYTHON_VERSION
+if ! pyenv versions | grep -q "$PYTHON_VERSION"; then
+  echo "⬇️ Ставим Python $PYTHON_VERSION (может занять время)..."
+  pyenv install "$PYTHON_VERSION"
 fi
 
-if ! pyenv virtualenvs | grep -q tg_env_tgsender; then
-  pyenv virtualenv $PYTHON_VERSION tg_env_tgsender
+# Создаём виртуальное окружение (если нет)
+if ! pyenv virtualenvs | grep -q "tg_env_tgsender"; then
+  pyenv virtualenv "$PYTHON_VERSION" tg_env_tgsender
 fi
 
 # === 4. Создаём папку проекта ===
 TARGET_DIR=~/tg_sender
-mkdir -p $TARGET_DIR
-cd $TARGET_DIR
+mkdir -p "$TARGET_DIR"
+cd "$TARGET_DIR"
 
 # === 5. requirements.txt ===
 cat <<EOF > requirements.txt
@@ -45,11 +60,8 @@ pyasn1==0.6.1
 tzlocal==5.3.1
 EOF
 
-# === 6. Активируем окружение ===
-eval "$(pyenv init -)"
-eval "$(pyenv virtualenv-init -)"
+# === 6. Активируем окружение и ставим зависимости ===
 pyenv activate tg_env_tgsender
-
 echo "📦 Устанавливаем зависимости..."
 pip install --upgrade pip
 pip install -r requirements.txt
@@ -63,14 +75,14 @@ read -p "PHONE (+380...): " PHONE
 echo "➡️ Введите текст рассылки (окончание Ctrl+D):"
 MESSAGE=$(</dev/stdin)
 
-# === 8. Сохраняем данные в .env ===
+# === 8. .env ===
 cat <<EOF > .env
 API_ID=$API_ID
 API_HASH=$API_HASH
 PHONE=$PHONE
 EOF
 
-# === 9. Сохраняем сообщение ===
+# === 9. message.txt ===
 cat <<EOF > message.txt
 $MESSAGE
 EOF
@@ -78,101 +90,132 @@ EOF
 # === 10. sender_full.py ===
 cat <<'EOF' > sender_full.py
 import os
+import re
 import asyncio
+from typing import List, Tuple, Optional
 from telethon import TelegramClient
+from telethon.errors import FloodWaitError
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 
-# Загружаем переменные
+# --- загрузка конфигураций ---
 load_dotenv()
 API_ID = int(os.getenv("API_ID"))
 API_HASH = os.getenv("API_HASH")
 PHONE = os.getenv("PHONE")
 
-# Пути к файлам
 MESSAGE_FILE = "message.txt"
 GROUPS_DIR = "groups"
+LOGS_DIR = "logs"
 
 GROUP_FILES = {
     "hourly": os.path.join(GROUPS_DIR, "hourly.txt"),
-    "daily": os.path.join(GROUPS_DIR, "daily.txt"),
-    "3days": os.path.join(GROUPS_DIR, "3days.txt"),
+    "daily":  os.path.join(GROUPS_DIR, "daily.txt"),
+    "3days":  os.path.join(GROUPS_DIR, "3days.txt"),
 }
 
-# Загружаем сообщение
-def load_message():
+os.makedirs(GROUPS_DIR, exist_ok=True)
+os.makedirs(LOGS_DIR, exist_ok=True)
+
+def load_message() -> str:
     if os.path.exists(MESSAGE_FILE):
         with open(MESSAGE_FILE, "r", encoding="utf-8") as f:
             return f.read().strip()
     return "⚡️ Тестовое сообщение"
 
-# Загружаем список групп
-def load_groups(filename):
-    if not os.path.exists(filename):
+def load_groups(path: str) -> List[str]:
+    if not os.path.exists(path):
         return []
-    with open(filename, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+    with open(path, "r", encoding="utf-8") as f:
+        lines = [ln.strip() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+    # Удаляем дубликаты, сохраняя порядок
+    seen = set()
+    result = []
+    for g in lines:
+        if g not in seen:
+            seen.add(g)
+            result.append(g)
+    return result
 
-# Рассылка сообщений
-async def send_to_groups(client, groups, label, message):
+def parse_topic_link(link: str) -> Tuple[str, Optional[int]]:
+    """
+    Поддержка форумных тем: https://t.me/<chat>/<topic_id>
+    Возвращает (основная_ссылка, topic_id|None).
+    """
+    m = re.match(r'^(https?://t\.me/[^/\s]+)/(\d+)$', link)
+    if m:
+        base = m.group(1)
+        topic_id = int(m.group(2))
+        return base, topic_id
+    return link, None
+
+async def send_one(client: TelegramClient, link: str, message: str, label: str):
+    base, topic_id = parse_topic_link(link)
+    try:
+        if topic_id:
+            # Пытаемся отправить в конкретную тему форума как reply_to
+            await client.send_message(base, message, reply_to=topic_id)
+        else:
+            await client.send_message(base, message)
+        print(f"[{label}] -> {link} ✅ отправлено")
+    except FloodWaitError as fw:
+        print(f"[{label}] -> {link} ❌ FloodWait: {fw.seconds}s")
+    except Exception as e:
+        print(f"[{label}] -> {link} ❌ ошибка: {e}")
+
+async def blast_list(client: TelegramClient, label: str):
+    """
+    Мгновенная рассылка по всему списку (для автостарта).
+    """
+    path = GROUP_FILES[label]
+    groups = load_groups(path)
+    msg = load_message()
     if not groups:
         print(f"[{label}] список пуст — пропускаем")
         return
+    print(f"=== Автостарт: {label} ({len(groups)}) ===")
+    for g in groups:
+        await send_one(client, g, msg, label)
+        await asyncio.sleep(3)
+    print(f"=== Автостарт {label} завершён ===")
 
+async def send_list(client: TelegramClient, label: str):
+    """
+    Плановая рассылка списка label с динамической подгрузкой текста и групп.
+    """
+    path = GROUP_FILES[label]
+    groups = load_groups(path)
+    msg = load_message()
+    if not groups:
+        print(f"[{label}] список пуст — пропускаем")
+        return
     print(f"=== Рассылка {label} начата ===")
-    for group in groups:
-        try:
-            await client.send_message(group, message)
-            print(f"[{label}] -> {group} ✅ отправлено")
-            await asyncio.sleep(3)  # задержка между группами
-        except Exception as e:
-            print(f"[{label}] -> {group} ❌ ошибка: {e}")
+    for g in groups:
+        await send_one(client, g, msg, label)
+        await asyncio.sleep(3)
     print(f"=== Рассылка {label} завершена ===")
 
-# Основная логика
 async def main():
-    message = load_message()
     client = TelegramClient("tg_session", API_ID, API_HASH)
-
     await client.start(phone=PHONE)
+    print("✅ Авторизация выполнена.")
 
-    # Автостарт рассылки сразу по всем спискам
-    print("🚀 Автостарт-рассылка по всем группам...")
-    for label, path in GROUP_FILES.items():
-        groups = load_groups(path)
-        await send_to_groups(client, groups, label, message)
+    # 1) Автостарт: сразу отправить по всем трем спискам
+    for lb in ("hourly", "daily", "3days"):
+        await blast_list(client, lb)
 
-    # Планировщик
+    # 2) Планировщик: hourly/daily/3days
     scheduler = AsyncIOScheduler()
-
-    # Каждый час
-    scheduler.add_job(
-        send_to_groups,
-        "interval",
-        args=[client, load_groups(GROUP_FILES["hourly"]), "hourly", message],
-        hours=1,
-    )
-
-    # Каждые сутки
-    scheduler.add_job(
-        send_to_groups,
-        "interval",
-        args=[client, load_groups(GROUP_FILES["daily"]), "daily", message],
-        hours=24,
-    )
-
-    # Каждые 3 суток
-    scheduler.add_job(
-        send_to_groups,
-        "interval",
-        args=[client, load_groups(GROUP_FILES["3days"]), "3days", message],
-        hours=72,
-    )
-
+    scheduler.add_job(lambda: asyncio.create_task(send_list(client, "hourly")),
+                      "interval", hours=1)
+    scheduler.add_job(lambda: asyncio.create_task(send_list(client, "daily")),
+                      "interval", hours=24)
+    scheduler.add_job(lambda: asyncio.create_task(send_list(client, "3days")),
+                      "interval", hours=72)
     scheduler.start()
+
     print("⏳ Расписание запущено. Работает круглосуточно...")
     await asyncio.Event().wait()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
@@ -181,6 +224,7 @@ EOF
 # === 11. Группы ===
 mkdir -p groups
 
+# ---- hourly.txt (твои группы) ----
 cat <<'EOF' > groups/hourly.txt
 https://t.me/Sugar_Desk
 https://t.me/devil_desk
@@ -298,14 +342,15 @@ https://t.me/BIGDesk
 https://t.me/Dating_Forums
 https://t.me/SugarDesk
 https://t.me/disneydesk
-https://t.me/Workers_Desk 
+https://t.me/Workers_Desk
 https://t.me/camweboard
-https://t.me/goatsof		
+https://t.me/goatsof
 https://t.me/OTC_ADULT
 https://t.me/apreeteam_desk
 https://t.me/adulthubdoska
 EOF
 
+# ---- daily.txt ----
 cat <<'EOF' > groups/daily.txt
 https://t.me/adult_18_board
 https://t.me/onlyfanspromoroom
@@ -314,34 +359,80 @@ https://t.me/OnlyBulletin
 https://t.me/adult_desk
 EOF
 
+# ---- 3days.txt ----
 cat <<'EOF' > groups/3days.txt
 https://t.me/CardoCrewDesk
 https://t.me/CardoCrewDeskTraffic
 https://t.me/adszavety
 EOF
 
-# === 12. start/stop/status ===
+# === 12. сервисные скрипты ===
+
+# запуск
 cat <<'EOF' > start.sh
 #!/bin/bash
 cd ~/tg_sender
 eval "$(pyenv init -)"
 eval "$(pyenv virtualenv-init -)"
 pyenv activate tg_env_tgsender
+echo "▶️  Старт рассылки..."
 python sender_full.py
 EOF
 chmod +x start.sh
 
+# стоп
 cat <<'EOF' > stop.sh
 #!/bin/bash
 pkill -f "python sender_full.py" || true
+echo "⛔️ Остановлено."
 EOF
 chmod +x stop.sh
 
+# статус
 cat <<'EOF' > status.sh
 #!/bin/bash
-ps aux | grep sender_full.py | grep -v grep
+ps aux | grep sender_full.py | grep -v grep || echo "Не запущено"
 EOF
 chmod +x status.sh
+
+# смена сообщения
+cat <<'EOF' > setmsg.sh
+#!/bin/bash
+cd ~/tg_sender
+echo "📝 Введите новый текст сообщения (Ctrl+D — завершить ввод):"
+cat > message.txt
+echo "✅ Сообщение сохранено в message.txt"
+EOF
+chmod +x setmsg.sh
+
+# редактирование списков групп
+cat <<'EOF' > setgroups.sh
+#!/bin/bash
+cd ~/tg_sender/groups
+echo "📂 Редактируем группы. Файлы: hourly.txt, daily.txt, 3days.txt"
+echo "Откроется nano. Сохранение: Ctrl+O, Enter. Выход: Ctrl+X."
+read -p "Открыть hourly.txt? (y/n): " A; [[ "$A" == "y" ]] && nano hourly.txt
+read -p "Открыть daily.txt? (y/n): " B; [[ "$B" == "y" ]] && nano daily.txt
+read -p "Открыть 3days.txt? (y/n): " C; [[ "$C" == "y" ]] && nano 3days.txt
+echo "✅ Группы обновлены."
+EOF
+chmod +x setgroups.sh
+
+# обновление .env без переустановки
+cat <<'EOF' > setenv.sh
+#!/bin/bash
+cd ~/tg_sender
+read -p "API_ID: " API_ID
+read -p "API_HASH: " API_HASH
+read -p "PHONE (+...): " PHONE
+cat <<ENV > .env
+API_ID=$API_ID
+API_HASH=$API_HASH
+PHONE=$PHONE
+ENV
+echo "✅ Данные сохранены в .env"
+EOF
+chmod +x setenv.sh
 
 echo "✅ Установка завершена!"
 echo "Теперь запустите:"
